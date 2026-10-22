@@ -1,15 +1,20 @@
 # YouTube Inspector
 
 A compliant YouTube URL inspector: paste a YouTube link and get its title,
-channel, thumbnail, duration and an official embedded preview — plus a
-standalone, versioned API that any website can integrate with.
+channel, thumbnail and duration — plus a standalone, versioned API that any
+website can integrate with.
 
-**There is deliberately no download feature.** YouTube provides no permitted
-way for third-party services to download videos, and YouTube's Developer
-Policies prohibit API clients from downloading, storing or enabling offline
-playback of YouTube audiovisual content without prior written approval.
-`capabilities.download` is always `false`, and the UI never shows a download
-button.
+**Video downloading is deliberately not offered.** YouTube provides no
+permitted way for third-party services to download videos, and YouTube's
+Developer Policies prohibit API clients from downloading, storing or
+enabling offline playback of YouTube audiovisual content without prior
+written approval. `capabilities.download` is always `false`, and the UI
+never offers a video download.
+
+The one file the service *does* deliver is the video's **thumbnail image**
+(a JPG still image, not the video) via
+`GET /api/v1/youtube/thumbnail/{video_id}` — see below. Inspect reports this
+as `capabilities.thumbnail_download: true`.
 
 ## Compliance basis
 
@@ -19,8 +24,10 @@ button.
   - **YouTube's official oEmbed endpoint** when no key is configured (title,
     channel, thumbnail; duration is not provided by oEmbed and is returned
     as `null`).
-- Previews use YouTube's **official embedded player**
-  (`www.youtube-nocookie.com/embed/<id>`).
+- There is **no embedded player**: the result page shows the video's
+  thumbnail image only — nothing is framed, played back or copied.
+- Thumbnail files are fetched only from YouTube's fixed image host
+  (`i.ytimg.com`) and served straight from memory (details below).
 - No scraping of youtube.com pages, no yt-dlp or any extractor, no cookies,
   no passwords, no session tokens — ever.
 - Unavailable/private/deleted videos are reported honestly as
@@ -77,7 +84,7 @@ Response (200):
     "thumbnail_url": "https://i.ytimg.com/vi/dQw4y9WgXcQ/maxresdefault.jpg",
     "duration_seconds": 213
   },
-  "capabilities": {"metadata": true, "preview": true, "download": false},
+  "capabilities": {"metadata": true, "preview": true, "download": false, "thumbnail_download": true},
   "actions": ["inspect", "preview"],
   "download_note": "YouTube does not provide a permitted way for third-party services to download videos; downloading is not offered."
 }
@@ -94,11 +101,41 @@ Validation errors (HTTP 400) and other failures use a consistent shape:
 ```
 
 Error codes: `MALFORMED_URL`, `INVALID_URL`, `UNSUPPORTED_HOST`,
-`RATE_LIMITED` (429), `REQUEST_TOO_LARGE` (413), `PROVIDER_TIMEOUT` (502),
+`INVALID_VIDEO_ID` (400), `THUMBNAIL_UNAVAILABLE` (404), `RATE_LIMITED`
+(429), `REQUEST_TOO_LARGE` (413), `PROVIDER_TIMEOUT` (502),
 `PROVIDER_ERROR` (502). Upstream error bodies are never forwarded — they can
 contain sensitive details — and API keys never appear in responses or logs.
 
 Interactive documentation is served at `/api/docs` (OpenAPI).
+
+### `GET /api/v1/youtube/thumbnail/{video_id}`
+
+Downloads the video's **thumbnail image** (a JPG still image — not the
+video).
+
+```bash
+curl -OJ https://<your-service>/api/v1/youtube/thumbnail/dQw4y9WgXcQ
+# saves youtube-dQw4y9WgXcQ-thumbnail.jpg
+```
+
+- `{video_id}` must match `^[A-Za-z0-9_-]{11}$`, otherwise HTTP 400
+  `INVALID_VIDEO_ID`.
+- The server fetches `https://i.ytimg.com/vi/{id}/maxresdefault.jpg` from
+  YouTube's fixed image host only, falling back to `hqdefault.jpg` on a
+  404. If both are missing: HTTP 404 `THUMBNAIL_UNAVAILABLE`.
+- Success: HTTP 200, `Content-Type: image/jpeg`,
+  `Content-Disposition: attachment; filename="youtube-{id}-thumbnail.jpg"`,
+  and a correct `Content-Length`.
+- Upstream bodies are capped at **2 MB** (an oversized body aborts with
+  502 `PROVIDER_ERROR`; nothing partial is served). Upstream timeout (8 s)
+  → 502 `PROVIDER_TIMEOUT`; other upstream failures → 502 `PROVIDER_ERROR`.
+  Upstream error bodies are never forwarded.
+- The same per-IP rate limit as `/inspect` applies (429 `RATE_LIMITED`).
+
+**No-storage design:** the image is streamed through memory and never
+written to disk. There is no temp file to expire, clean up, or leak between
+users — the no-storage approach exceeds the usual short-lived-file
+requirement by never creating a file at all.
 
 ### Accepted URL formats
 
@@ -129,7 +166,7 @@ with a validated video ID, which structurally prevents SSRF through this API.
 |------------------------|---------|-------------------------------------------------------------------------|
 | `YOUTUBE_API_KEY`      | unset   | Enables the Data API v3 metadata path. Unset → oEmbed fallback.        |
 | `ALLOWED_ORIGINS`      | unset   | Comma-separated CORS allow-list. Unset → same-origin only.              |
-| `RATE_LIMIT_PER_MINUTE`| `30`    | Per-IP token-bucket limit on `/api/v1/youtube/inspect`.                 |
+| `RATE_LIMIT_PER_MINUTE`| `30`    | Per-IP token-bucket limit on the inspect and thumbnail endpoints.       |
 | `PORT`                 | `8000`  | Listen port (set automatically by Render).                              |
 
 Copy `.env.example` to `.env` for local configuration; never commit `.env`.
@@ -166,11 +203,13 @@ replaceable because all logic lives behind the API contract.
 - Exact host allow-list + strict video-ID validation; userinfo/`@` tricks
   and lookalike hosts rejected.
 - The server never fetches user-supplied URLs — outbound calls go only to
-  `www.googleapis.com` / `www.youtube.com/oembed` with a validated ID.
-- 8 KB request-body cap, 8 s upstream timeouts, per-IP rate limiting.
+  `www.googleapis.com` / `www.youtube.com/oembed` for metadata and
+  `i.ytimg.com` for thumbnails, always with a validated ID.
+- 8 KB request-body cap, 8 s upstream timeouts, 2 MB thumbnail cap,
+  per-IP rate limiting.
 - Security headers on every response (`nosniff`, `X-Frame-Options: DENY`,
-  `Referrer-Policy`, and a CSP that only allows the YouTube embed and
-  `i.ytimg.com` images).
+  `Referrer-Policy`, and a CSP with `frame-src 'none'` that only allows
+  `i.ytimg.com` images beyond the site's own assets).
 - No secrets in code, logs, or error responses; non-root Docker user.
 
 ## Tests
@@ -183,8 +222,11 @@ pytest
 The suite covers URL parsing (valid formats, lookalike hosts, schemes,
 credentials), the API contract with **mocked** upstream responses (success,
 unavailable, timeout, upstream error, rate limiting, API-key non-leakage),
-health, CORS and the frontend (including asserting no button offers a
-download). Unit tests make no live network calls.
+the thumbnail endpoint with a mocked image host (success, maxres→hq
+fallback, unavailable, invalid ID, timeout, oversized body, rate limiting),
+health, CORS and the frontend (including asserting there is no embedded
+player and no button offers a *video* download — the only download control
+is "Download thumbnail"). Unit tests make no live network calls.
 
 ## Maintenance
 

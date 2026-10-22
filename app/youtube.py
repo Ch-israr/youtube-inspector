@@ -7,7 +7,10 @@ Compliance: metadata comes ONLY from official endpoints:
 - YouTube Data API v3 (when YOUTUBE_API_KEY is configured)
 - YouTube's official oEmbed endpoint (otherwise)
 
-No scraping, no extraction, no downloading. Ever.
+Thumbnail images are fetched only from YouTube's fixed image host
+(i.ytimg.com) and served from memory — nothing is stored.
+
+No scraping, no extraction, no video downloading. Ever.
 """
 from __future__ import annotations
 
@@ -32,6 +35,12 @@ VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 _ID_PATH_PREFIXES = ("shorts", "live", "embed", "v")
 
 UPSTREAM_TIMEOUT = httpx.Timeout(connect=8.0, read=8.0, write=8.0, pool=8.0)
+
+# Thumbnails are served only from YouTube's fixed image host, and the body is
+# capped so a misbehaving upstream can never make us proxy an unbounded file.
+THUMBNAIL_HOST = "i.ytimg.com"
+THUMBNAIL_VARIANTS = ("maxresdefault", "hqdefault")
+MAX_THUMBNAIL_BYTES = 2 * 1024 * 1024  # 2 MB
 
 DOWNLOAD_NOTE = (
     "YouTube does not provide a permitted way for third-party services to "
@@ -67,6 +76,14 @@ class ProviderTimeoutError(YouTubeError):
 
 class ProviderError(YouTubeError):
     code = "PROVIDER_ERROR"
+
+
+class InvalidVideoIDError(YouTubeError):
+    code = "INVALID_VIDEO_ID"
+
+
+class ThumbnailUnavailableError(YouTubeError):
+    code = "THUMBNAIL_UNAVAILABLE"
 
 
 def parse_youtube_url(raw: str) -> str:
@@ -128,6 +145,16 @@ def _checked_id(candidate: str) -> str:
     if not candidate or not VIDEO_ID_RE.match(candidate):
         raise InvalidURLError("That does not look like a valid YouTube video ID.")
     return candidate
+
+
+def validate_video_id(video_id: str) -> str:
+    """Validate a bare video ID (used by the thumbnail endpoint).
+
+    Raises InvalidVideoIDError.
+    """
+    if not isinstance(video_id, str) or not VIDEO_ID_RE.match(video_id or ""):
+        raise InvalidVideoIDError("That does not look like a valid YouTube video ID.")
+    return video_id
 
 
 def canonical_url(video_id: str) -> str:
@@ -320,3 +347,62 @@ async def inspect_video(video_id: str, client: httpx.AsyncClient | None = None) 
     if metadata is None:
         return {"status": "unavailable", "video": _empty_metadata(video_id)}
     return {"status": "ok", "video": metadata}
+
+
+async def _fetch_thumbnail_variant(
+    client: httpx.AsyncClient, video_id: str, variant: str
+) -> bytes | None:
+    """Fetch one thumbnail variant. Bytes on 200, None on 404.
+
+    The body is streamed with a hard size cap; an oversized body aborts the
+    fetch instead of being buffered or served partially.
+    """
+    url = f"https://{THUMBNAIL_HOST}/vi/{video_id}/{variant}.jpg"
+    try:
+        async with client.stream("GET", url) as resp:
+            if resp.status_code == 404:
+                return None
+            if resp.status_code != 200:
+                raise ProviderError("YouTube's thumbnail service returned an error.")
+            chunks: list[bytes] = []
+            total = 0
+            async for chunk in resp.aiter_bytes():
+                total += len(chunk)
+                if total > MAX_THUMBNAIL_BYTES:
+                    raise ProviderError("The thumbnail image is unexpectedly large.")
+                chunks.append(chunk)
+            return b"".join(chunks)
+    except httpx.TimeoutException:
+        raise ProviderTimeoutError("YouTube did not respond in time. Please try again.")
+    except httpx.HTTPError:
+        raise ProviderError("Could not reach YouTube. Please try again.")
+
+
+async def fetch_thumbnail(
+    video_id: str, client: httpx.AsyncClient | None = None
+) -> bytes:
+    """Fetch a video's thumbnail JPEG from the fixed host i.ytimg.com.
+
+    Tries the max-resolution variant first, then the high-quality one, and
+    returns the raw JPEG bytes. Nothing is written to disk — the caller
+    serves the bytes straight from memory.
+
+    Raises InvalidVideoIDError, ThumbnailUnavailableError (both variants
+    404), ProviderTimeoutError or ProviderError.
+    """
+    validate_video_id(video_id)
+    own_client = client is None
+    if own_client:
+        try:
+            client = _make_default_client()
+        except Exception:
+            raise ProviderError("Could not initialise the YouTube connection.")
+    try:
+        for variant in THUMBNAIL_VARIANTS:
+            data = await _fetch_thumbnail_variant(client, video_id, variant)
+            if data is not None:
+                return data
+        raise ThumbnailUnavailableError("No thumbnail is available for this video.")
+    finally:
+        if own_client:
+            await client.aclose()

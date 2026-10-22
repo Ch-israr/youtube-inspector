@@ -29,9 +29,28 @@ def test_frontend_served(client):
     assert "YouTube Inspector" in html
     # The explanatory "About downloads" note is expected and allowed...
     assert "About downloads" in html
-    # ...but no button may offer a download action.
+    # No embedded player anywhere: no iframe, no nocookie embed host.
+    assert "<iframe" not in html.lower()
+    assert "youtube-nocookie" not in html
+    # A thumbnail download control exists...
+    assert "Download thumbnail" in html
+    # ...but no button may promise a video download. The thumbnail button
+    # ("Download thumbnail") is the only download control allowed.
     for button_html in re.findall(r"<button.*?</button>", html, flags=re.S):
-        assert "download" not in button_html.lower()
+        text = re.sub(r"<[^>]+>", "", button_html).strip().lower()
+        assert text != "download"
+        assert "download video" not in text
+        assert "download the video" not in text
+
+
+def test_frontend_js_has_no_embed(client):
+    resp = client.get("/app.js")
+    assert resp.status_code == 200
+    js = resp.text
+    assert "youtube-nocookie" not in js
+    assert "iframe" not in js.lower()
+    # The thumbnail download goes through the backend endpoint.
+    assert "/api/v1/youtube/thumbnail/" in js
 
 
 def test_css_hidden_rule_overrides_display(client):
@@ -48,4 +67,9 @@ def test_security_headers(client):
     resp = client.get("/api/v1/health")
     assert resp.headers["X-Content-Type-Options"] == "nosniff"
     assert resp.headers["X-Frame-Options"] == "DENY"
-    assert "youtube-nocookie.com" in resp.headers["Content-Security-Policy"]
+    csp = resp.headers["Content-Security-Policy"]
+    # The embed was removed: no frames may be loaded at all.
+    assert "frame-src 'none'" in csp
+    assert "youtube-nocookie" not in csp
+    # Thumbnails still display via <img> from YouTube's image host.
+    assert "https://i.ytimg.com" in csp

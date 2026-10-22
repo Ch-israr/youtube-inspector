@@ -15,16 +15,19 @@
   var channel = document.getElementById("result-channel");
   var duration = document.getElementById("result-duration");
   var badge = document.getElementById("availability-badge");
-  var embedBox = document.getElementById("embed-box");
-  var embedFrame = document.getElementById("embed-frame");
+  var thumbBtn = document.getElementById("thumb-download-btn");
+  var thumbNote = document.getElementById("thumb-note");
   var copyBtn = document.getElementById("copy-btn");
   var copyFeedback = document.getElementById("copy-feedback");
   var themeToggle = document.getElementById("theme-toggle");
 
   var currentCanonicalUrl = "";
+  var currentVideoId = "";
 
   var ERROR_COPY = {
     INVALID_URL: "That link doesn't contain a valid YouTube video ID. Check the link and try again.",
+    INVALID_VIDEO_ID: "That video ID isn't valid, so its thumbnail can't be fetched.",
+    THUMBNAIL_UNAVAILABLE: "That video's thumbnail couldn't be fetched — YouTube doesn't have one available for it.",
     UNSUPPORTED_HOST: "That isn't a YouTube link. This checker only accepts links from youtube.com and youtu.be.",
     MALFORMED_URL: "That doesn't look like a complete link. Paste the full URL, starting with https://.",
     RATE_LIMITED: "You're checking links very quickly — give it a few seconds and try again.",
@@ -57,6 +60,7 @@
   function showResult(data) {
     var video = data.video || {};
     currentCanonicalUrl = video.canonical_url || "";
+    currentVideoId = video.id || "";
 
     badge.textContent = data.status === "ok" ? "Available" : "Unavailable";
     badge.className = "badge " + (data.status === "ok" ? "badge-ok" : "badge-warn");
@@ -76,13 +80,10 @@
     var dur = formatDuration(video.duration_seconds);
     duration.textContent = dur ? "⏱ " + dur : "";
 
-    if (data.status === "ok" && video.id) {
-      embedFrame.src = "https://www.youtube-nocookie.com/embed/" + video.id;
-      embedBox.hidden = false;
-    } else {
-      embedFrame.removeAttribute("src");
-      embedBox.hidden = true;
-    }
+    // The thumbnail download is only offered when the video actually has one.
+    var hasThumbnail = !!video.thumbnail_url;
+    thumbBtn.hidden = !hasThumbnail;
+    thumbNote.hidden = !hasThumbnail;
 
     copyFeedback.textContent = "";
     showOnly(resultCard);
@@ -136,8 +137,46 @@
 
   clearBtn.addEventListener("click", function () {
     input.value = "";
+    currentCanonicalUrl = "";
+    currentVideoId = "";
     [loading, resultCard, errorCard].forEach(function (node) { node.hidden = true; });
     input.focus();
+  });
+
+  thumbBtn.addEventListener("click", function () {
+    if (!currentVideoId) return;
+    var originalLabel = thumbBtn.textContent;
+    thumbBtn.disabled = true;
+    thumbBtn.textContent = "Downloading…";
+
+    fetch("/api/v1/youtube/thumbnail/" + encodeURIComponent(currentVideoId))
+      .then(function (resp) {
+        if (!resp.ok) {
+          return resp.json().catch(function () { return {}; }).then(function (data) {
+            var err = new Error(data.message || "Thumbnail download failed.");
+            err.code = data.code;
+            throw err;
+          });
+        }
+        return resp.blob();
+      })
+      .then(function (blob) {
+        var objectUrl = URL.createObjectURL(blob);
+        var link = document.createElement("a");
+        link.href = objectUrl;
+        link.download = "youtube-" + currentVideoId + "-thumbnail.jpg";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(function () { URL.revokeObjectURL(objectUrl); }, 4000);
+      })
+      .catch(function (err) {
+        showError(err && err.code, err && err.message);
+      })
+      .finally(function () {
+        thumbBtn.disabled = false;
+        thumbBtn.textContent = originalLabel;
+      });
   });
 
   copyBtn.addEventListener("click", function () {

@@ -57,7 +57,12 @@ def test_inspect_success_oembed(clean_env, monkeypatch):
     assert video["channel"] == "Mock Channel"
     assert video["thumbnail_url"].startswith("https://i.ytimg.com/")
     assert video["duration_seconds"] is None  # oEmbed provides no duration
-    assert body["capabilities"] == {"metadata": True, "preview": True, "download": False}
+    assert body["capabilities"] == {
+        "metadata": True,
+        "preview": True,
+        "download": False,
+        "thumbnail_download": True,
+    }
     assert body["actions"] == ["inspect", "preview"]
     assert "download" in body["download_note"].lower()
 

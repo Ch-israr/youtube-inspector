@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>YouTube Inspector — Check any YouTube link</title>
-<meta name="description" content="Paste a YouTube URL to see its title, channel, thumbnail and an official embedded preview. Free, private, no sign-up.">
+<meta name="description" content="Paste a YouTube URL to see its title, channel, duration and thumbnail — and save the thumbnail as a JPG image. Free, private, no sign-up.">
 <link rel="stylesheet" href="/styles.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e03131'/%3E%3Cpath d='M13 10.5v11l9.5-5.5z' fill='white'/%3E%3C/svg%3E">
 </head>
@@ -24,7 +24,7 @@
 <main class="wrap">
   <section class="hero">
     <h1>Paste a YouTube link.<br>See exactly what it is.</h1>
-    <p class="lede">Title, channel, thumbnail and an official playable preview — straight from YouTube's own services. No sign-up, no tracking of your link beyond this check.</p>
+    <p class="lede">Title, channel, duration and the video's thumbnail in full size — straight from YouTube's own services. No sign-up, no tracking of your link beyond this check.</p>
 
     <form id="inspect-form" class="inspect-form" novalidate>
       <label class="sr-only" for="url-input">YouTube URL</label>
@@ -54,14 +54,14 @@
           <span id="result-channel"></span>
           <span id="result-duration" class="duration"></span>
         </p>
-        <div id="embed-box" class="embed-box" hidden>
-          <iframe id="embed-frame" title="Official YouTube player" loading="lazy"
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-                  allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
-        </div>
         <div class="result-actions">
+          <button id="thumb-download-btn" class="primary-btn" type="button">Download thumbnail</button>
           <button id="copy-btn" class="secondary-btn" type="button">Copy link</button>
           <span id="copy-feedback" class="copy-feedback" role="status"></span>
+        </div>
+        <p id="thumb-note" class="thumb-note">The download is the thumbnail as an image file (JPG) — a picture, not the video.</p>
+        <div class="unavailable-note" role="note">
+          <strong>Video download unavailable.</strong> YouTube doesn't provide third-party services a permitted way to download videos, so the video itself can't be downloaded here.
         </div>
       </article>
 
@@ -75,7 +75,8 @@
   <section class="info-grid">
     <div class="card info">
       <h3>About downloads</h3>
-      <p>You won't find a download button here — on purpose. YouTube doesn't offer third-party websites a permitted way to download videos, and its terms don't allow it. Tools that promise otherwise are breaking those terms. What we <em>can</em> do legitimately is show you everything about a video and play it through YouTube's official player, which is what this site does.</p>
+      <p>You <em>can</em> download a video's <strong>thumbnail</strong> here — the still image shown with the result — as a JPG file. That's an image, not the video.</p>
+      <p>Downloading the <strong>video</strong> itself isn't offered: YouTube doesn't provide third-party websites a permitted way to download videos, and its terms don't allow it. Tools that promise otherwise are breaking those terms.</p>
       <p>Want a video offline? YouTube's own app offers downloads on eligible videos for the uploader's audience, and creators can save their own uploads from YouTube Studio.</p>
     </div>
     <div class="card info">
@@ -91,7 +92,7 @@
     </div>
     <div class="card info">
       <h3>How it works</h3>
-      <p>Your link is checked against a strict list of real YouTube hosts, the video ID is extracted, and the details are fetched from YouTube's official data services. Nothing is scraped, extracted or copied — the preview is YouTube's own embedded player.</p>
+      <p>Your link is checked against a strict list of real YouTube hosts, the video ID is extracted, and the details are fetched from YouTube's official data services. The thumbnail our server delivers comes straight from YouTube's own image service. Nothing is scraped or extracted.</p>
     </div>
   </section>
 
@@ -101,6 +102,7 @@
     <pre><code>POST /api/v1/youtube/inspect
 {"url": "https://www.youtube.com/watch?v=dQw4y9WgXcQ"}
 
+GET  /api/v1/youtube/thumbnail/dQw4y9WgXcQ   (the thumbnail JPG)
 GET  /api/v1/health</code></pre>
     <p>See the <a href="/api/docs">interactive API documentation</a> for full schemas. Cross-origin use is enabled per-site by the operator via an allow-list — secrets are never exposed to browser code.</p>
   </section>
@@ -119,7 +121,7 @@ GET  /api/v1/health</code></pre>
 
 <footer class="site-footer">
   <div class="wrap footer-inner">
-    <span>YouTube Inspector — a link checker, not a downloader.</span>
+    <span>YouTube Inspector — a link checker. Thumbnails only; no video downloads.</span>
     <nav aria-label="Footer">
       <a href="#about">About</a> · <a href="#api">API</a> · <a href="#privacy">Privacy</a> · <a href="#terms">Terms</a>
     </nav>

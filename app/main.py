@@ -1,8 +1,8 @@
 """YouTube Inspector — FastAPI application.
 
-A compliant YouTube URL inspector: metadata and official embedded previews
-only, served from official YouTube endpoints. No downloading, no extraction,
-no scraping.
+A compliant YouTube URL inspector: metadata from official YouTube endpoints
+and thumbnail images served from YouTube's fixed image host. No video
+downloading, no extraction, no scraping.
 """
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -105,7 +105,7 @@ def create_app() -> FastAPI:
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; "
             "img-src 'self' https://i.ytimg.com data:; "
-            "frame-src https://www.youtube-nocookie.com; "
+            "frame-src 'none'; "
             "style-src 'self'; script-src 'self'; "
             "base-uri 'self'; form-action 'self'"
         )
@@ -148,10 +148,50 @@ def create_app() -> FastAPI:
             "platform": PLATFORM,
             "status": result["status"],
             "video": result["video"],
-            "capabilities": {"metadata": True, "preview": True, "download": False},
+            "capabilities": {
+                "metadata": True,
+                "preview": True,
+                "download": False,
+                "thumbnail_download": True,
+            },
             "actions": ["inspect", "preview"],
             "download_note": yt.DOWNLOAD_NOTE,
         }
+
+    @app.get("/api/v1/youtube/thumbnail/{video_id}")
+    async def thumbnail(video_id: str, request: Request):
+        """Deliver the video's thumbnail as a downloadable JPG.
+
+        The image is fetched from YouTube's fixed image host (i.ytimg.com)
+        and served straight from memory — no file is ever written to disk,
+        so there is nothing to expire, clean up, or leak between users.
+        """
+        client_ip = request.client.host if request.client else "unknown"
+        if not limiter.allow(client_ip):
+            return _error(429, "RATE_LIMITED", "Too many requests. Please wait a moment and try again.")
+
+        try:
+            data = await yt.fetch_thumbnail(video_id)
+        except yt.InvalidVideoIDError as exc:
+            return _error(400, exc.code, exc.message)
+        except yt.ThumbnailUnavailableError as exc:
+            return _error(404, exc.code, exc.message)
+        except yt.ProviderTimeoutError as exc:
+            return _error(502, exc.code, exc.message)
+        except yt.ProviderError as exc:
+            return _error(502, exc.code, exc.message)
+        except Exception:
+            # Same safety net as /inspect: structured 502, never a 500.
+            return _error(502, "PROVIDER_ERROR", "YouTube's service couldn't answer just now.")
+
+        return Response(
+            content=data,
+            media_type="image/jpeg",
+            headers={
+                "Content-Disposition": f'attachment; filename="youtube-{video_id}-thumbnail.jpg"',
+                "Content-Length": str(len(data)),
+            },
+        )
 
     if STATIC_DIR.is_dir():
         app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="static")
