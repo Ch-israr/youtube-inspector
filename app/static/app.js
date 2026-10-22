@@ -69,8 +69,10 @@
       thumb.removeAttribute("src");
     }
 
-    title.textContent = video.title || "This video is unavailable";
-    channel.textContent = video.channel ? "by " + video.channel : "";
+    title.textContent = video.title || "No details available for this video";
+    channel.textContent = video.channel
+      ? "by " + video.channel
+      : (data.status === "ok" ? "" : "YouTube's official API returned no information for this link — the video may be private, removed, or restricted for API access (some music videos are).");
     var dur = formatDuration(video.duration_seconds);
     duration.textContent = dur ? "⏱ " + dur : "";
 
