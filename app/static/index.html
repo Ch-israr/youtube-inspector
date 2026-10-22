@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YouTube Inspector — Check any YouTube link</title>
+<meta name="description" content="Paste a YouTube URL to see its title, channel, thumbnail and an official embedded preview. Free, private, no sign-up.">
+<link rel="stylesheet" href="/styles.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e03131'/%3E%3Cpath d='M13 10.5v11l9.5-5.5z' fill='white'/%3E%3C/svg%3E">
+</head>
+<body>
+<header class="site-header">
+  <div class="wrap header-inner">
+    <a class="brand" href="/" aria-label="YouTube Inspector home">
+      <span class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 32 32" width="30" height="30"><rect width="32" height="32" rx="7" fill="#e03131"/><path d="M13 10.5v11l9.5-5.5z" fill="#fff"/></svg>
+      </span>
+      <span class="brand-name">YouTube <em>Inspector</em></span>
+    </a>
+    <button id="theme-toggle" class="ghost-btn" type="button" aria-label="Toggle dark mode">🌙 Dark</button>
+  </div>
+</header>
+
+<main class="wrap">
+  <section class="hero">
+    <h1>Paste a YouTube link.<br>See exactly what it is.</h1>
+    <p class="lede">Title, channel, thumbnail and an official playable preview — straight from YouTube's own services. No sign-up, no tracking of your link beyond this check.</p>
+
+    <form id="inspect-form" class="inspect-form" novalidate>
+      <label class="sr-only" for="url-input">YouTube URL</label>
+      <div class="input-row">
+        <input id="url-input" name="url" type="url" inputmode="url" autocomplete="off" spellcheck="false"
+               placeholder="https://www.youtube.com/watch?v=…" aria-describedby="formats-hint">
+        <button id="paste-btn" class="secondary-btn" type="button">Paste</button>
+        <button id="clear-btn" class="secondary-btn" type="button">Clear</button>
+        <button id="inspect-btn" class="primary-btn" type="submit">Inspect</button>
+      </div>
+      <p id="formats-hint" class="hint">Works with watch links, youtu.be short links, Shorts, live and embed URLs.</p>
+    </form>
+
+    <div id="status-region" aria-live="polite">
+      <div id="loading" class="loading" hidden>
+        <span class="spinner" aria-hidden="true"></span> Checking with YouTube…
+      </div>
+
+      <article id="result-card" class="card result" hidden>
+        <div class="result-head">
+          <span class="chip">YouTube</span>
+          <span id="availability-badge" class="badge badge-ok">Available</span>
+        </div>
+        <img id="result-thumb" class="result-thumb" alt="Video thumbnail" hidden>
+        <h2 id="result-title"></h2>
+        <p class="meta-line">
+          <span id="result-channel"></span>
+          <span id="result-duration" class="duration"></span>
+        </p>
+        <div id="embed-box" class="embed-box" hidden>
+          <iframe id="embed-frame" title="Official YouTube player" loading="lazy"
+                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+                  allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+        </div>
+        <div class="result-actions">
+          <button id="copy-btn" class="secondary-btn" type="button">Copy link</button>
+          <span id="copy-feedback" class="copy-feedback" role="status"></span>
+        </div>
+      </article>
+
+      <article id="error-card" class="card error" hidden>
+        <h2 id="error-title">That link didn't work</h2>
+        <p id="error-message"></p>
+      </article>
+    </div>
+  </section>
+
+  <section class="info-grid">
+    <div class="card info">
+      <h3>About downloads</h3>
+      <p>You won't find a download button here — on purpose. YouTube doesn't offer third-party websites a permitted way to download videos, and its terms don't allow it. Tools that promise otherwise are breaking those terms. What we <em>can</em> do legitimately is show you everything about a video and play it through YouTube's official player, which is what this site does.</p>
+      <p>Want a video offline? YouTube's own app offers downloads on eligible videos for the uploader's audience, and creators can save their own uploads from YouTube Studio.</p>
+    </div>
+    <div class="card info">
+      <h3>Supported link formats</h3>
+      <ul class="formats">
+        <li><code>youtube.com/watch?v=…</code></li>
+        <li><code>youtu.be/…</code> short links</li>
+        <li><code>youtube.com/shorts/…</code></li>
+        <li><code>youtube.com/live/…</code></li>
+        <li><code>youtube.com/embed/…</code></li>
+        <li>Music and mobile (<code>music.</code> / <code>m.</code>) links</li>
+      </ul>
+    </div>
+    <div class="card info">
+      <h3>How it works</h3>
+      <p>Your link is checked against a strict list of real YouTube hosts, the video ID is extracted, and the details are fetched from YouTube's official data services. Nothing is scraped, extracted or copied — the preview is YouTube's own embedded player.</p>
+    </div>
+  </section>
+
+  <section class="card info wide" id="api">
+    <h3>For developers — the API</h3>
+    <p>This site runs on a standalone, versioned API that any website can call:</p>
+    <pre><code>POST /api/v1/youtube/inspect
+{"url": "https://www.youtube.com/watch?v=dQw4y9WgXcQ"}
+
+GET  /api/v1/health</code></pre>
+    <p>See the <a href="/api/docs">interactive API documentation</a> for full schemas. Cross-origin use is enabled per-site by the operator via an allow-list — secrets are never exposed to browser code.</p>
+  </section>
+
+  <section class="info-grid" id="about">
+    <div class="card info" id="privacy">
+      <h3>Privacy</h3>
+      <p>URLs you inspect are sent to YouTube's official services to retrieve the video's public details. We don't require accounts, don't ask for any passwords or cookies, and don't sell data. Basic rate limiting uses your IP address in memory only.</p>
+    </div>
+    <div class="card info" id="terms">
+      <h3>Terms</h3>
+      <p>This is a link-inspection tool. All video content belongs to its creators and is served by YouTube. Use of this site implies agreement to use it only for lawful inspection and preview of publicly available videos.</p>
+    </div>
+  </section>
+</main>
+
+<footer class="site-footer">
+  <div class="wrap footer-inner">
+    <span>YouTube Inspector — a link checker, not a downloader.</span>
+    <nav aria-label="Footer">
+      <a href="#about">About</a> · <a href="#api">API</a> · <a href="#privacy">Privacy</a> · <a href="#terms">Terms</a>
+    </nav>
+  </div>
+</footer>
+
+<script src="/app.js" defer></script>
+</body>
+</html>
