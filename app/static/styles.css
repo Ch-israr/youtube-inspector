@@ -106,6 +106,7 @@ a { color: var(--accent); }
 .hint { color: var(--muted); font-size: 0.88rem; margin-top: 10px; }
 
 /* Status / cards */
+[hidden] { display: none !important; }
 .loading { margin: 26px auto 0; color: var(--muted); display: flex; gap: 10px; align-items: center; justify-content: center; }
 .spinner {
   width: 18px; height: 18px; border-radius: 50%;

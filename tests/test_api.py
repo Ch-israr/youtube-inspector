@@ -34,6 +34,16 @@ def test_frontend_served(client):
         assert "download" not in button_html.lower()
 
 
+def test_css_hidden_rule_overrides_display(client):
+    # Regression (2026-10-22 live browser test): .loading sets display:flex,
+    # which silently overrode the hidden attribute and left the spinner
+    # visible after results rendered. The stylesheet must force hidden.
+    resp = client.get("/styles.css")
+    assert resp.status_code == 200
+    assert "[hidden]" in resp.text
+    assert "display: none !important" in resp.text
+
+
 def test_security_headers(client):
     resp = client.get("/api/v1/health")
     assert resp.headers["X-Content-Type-Options"] == "nosniff"
