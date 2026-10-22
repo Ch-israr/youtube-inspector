@@ -16,12 +16,21 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+from starlette.concurrency import run_in_threadpool
 
+from app import media
 from app import youtube as yt
 
 SERVICE_NAME = "youtube-inspector"
 SERVICE_VERSION = "1.0.0"
 PLATFORM = "youtube"
+
+DOWNLOAD_NOT_PERMITTED_MESSAGE = (
+    "No permitted download workflow exists for arbitrary YouTube videos. "
+    "YouTube's terms and Developer Policies do not allow third-party "
+    "services to download videos, and no compliant engine is available. "
+    "This service offers metadata inspection and thumbnail download instead."
+)
 
 MAX_BODY_BYTES = 8 * 1024  # 8 KB cap on API request bodies
 
@@ -113,7 +122,17 @@ def create_app() -> FastAPI:
 
     @app.get("/api/v1/health")
     async def health():
-        return {"status": "ok", "service": SERVICE_NAME, "version": SERVICE_VERSION}
+        # Tool versions only — never environment variables, keys or other
+        # configuration. ffprobe presence is operationally meaningful: the
+        # deployed image guarantees it, and thumbnail output validation is
+        # active exactly when it is present.
+        tools = await run_in_threadpool(media.tool_versions)
+        return {
+            "status": "ok",
+            "service": SERVICE_NAME,
+            "version": SERVICE_VERSION,
+            "tools": tools,
+        }
 
     @app.post("/api/v1/youtube/inspect")
     async def inspect(request: Request):
@@ -158,6 +177,47 @@ def create_app() -> FastAPI:
             "download_note": yt.DOWNLOAD_NOTE,
         }
 
+    @app.post("/api/v1/youtube/download")
+    async def download(request: Request):
+        """Video download — backed by the engine registry in app.media.
+
+        The registry ships empty: no permitted engine exists for arbitrary
+        YouTube video downloads, so every well-formed request is answered
+        honestly with 422 DOWNLOAD_NOT_PERMITTED. If a permitted engine is
+        ever registered, this endpoint starts serving real download jobs
+        through it with no API-shape or frontend change.
+        """
+        client_ip = request.client.host if request.client else "unknown"
+        if not limiter.allow(client_ip):
+            return _error(429, "RATE_LIMITED", "Too many requests. Please wait a moment and try again.")
+
+        try:
+            payload = await request.json()
+        except Exception:
+            return _error(400, "MALFORMED_URL", "Request body must be JSON with a 'url' field.")
+        if not isinstance(payload, dict) or "url" not in payload:
+            return _error(400, "MALFORMED_URL", "Request body must be JSON with a 'url' field.")
+
+        try:
+            video_id = yt.parse_youtube_url(payload.get("url"))
+        except yt.YouTubeError as exc:
+            return _error(400, exc.code, exc.message)
+
+        url_info = {
+            "platform": PLATFORM,
+            "video_id": video_id,
+            "canonical_url": yt.canonical_url(video_id),
+            "url": payload.get("url"),
+        }
+        engine = media.select_engine(url_info)
+        if engine is None:
+            return _error(422, "DOWNLOAD_NOT_PERMITTED", DOWNLOAD_NOT_PERMITTED_MESSAGE)
+        # Unreachable in this build — ENGINE_REGISTRY is intentionally
+        # empty, and the DownloadEngine contract defines registration and
+        # selection only; a job-execution contract lands together with the
+        # first permitted engine. Until then the honest answer is the same.
+        return _error(422, "DOWNLOAD_NOT_PERMITTED", DOWNLOAD_NOT_PERMITTED_MESSAGE)
+
     @app.get("/api/v1/youtube/thumbnail/{video_id}")
     async def thumbnail(video_id: str, request: Request):
         """Deliver the video's thumbnail as a downloadable JPG.
@@ -183,6 +243,17 @@ def create_app() -> FastAPI:
         except Exception:
             # Same safety net as /inspect: structured 502, never a 500.
             return _error(502, "PROVIDER_ERROR", "YouTube's service couldn't answer just now.")
+
+        # Output validation: when ffprobe is available (always, in the
+        # deployed Docker image), prove the bytes really are an image
+        # before serving them. An upstream HTML error page or other
+        # non-image bytes must never reach the user as a "successful"
+        # thumbnail download. Without ffprobe (bare dev environment) the
+        # bytes are served as before; /api/v1/health reports tool presence.
+        if media.ffprobe_available():
+            info = await run_in_threadpool(media.probe_media, data)
+            if info is None or not media.is_image_media(info):
+                return _error(502, "PROVIDER_ERROR", "Upstream returned invalid media.")
 
         return Response(
             content=data,

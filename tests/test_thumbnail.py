@@ -2,6 +2,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from app import media
 from app import youtube as yt
 from app.main import create_app
 
@@ -15,6 +16,30 @@ def clean_env(monkeypatch):
     monkeypatch.delenv("YOUTUBE_API_KEY", raising=False)
     monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
     monkeypatch.setenv("RATE_LIMIT_PER_MINUTE", "30")
+
+
+@pytest.fixture(autouse=True)
+def _valid_probe(monkeypatch):
+    """Stand in for a passing ffprobe validation of the thumbnail bytes.
+
+    The mocked upstream serves synthetic JPEG bytes (JPEG_BYTES is a
+    header/trailer stub, not a strictly valid image), so the route's
+    ffprobe output-validation is stubbed to a passing image result. This
+    keeps the thumbnail tests deterministic whether or not the machine
+    running them has ffprobe installed. The real probe is covered in
+    tests/test_media.py; the rejection path is covered by
+    test_thumbnail_invalid_media_rejected below.
+    """
+    monkeypatch.setattr(
+        media,
+        "probe_media",
+        lambda data: {
+            "format": "image2",
+            "video_codec": "mjpeg",
+            "width": 1280,
+            "height": 720,
+        },
+    )
 
 
 def use_transport(monkeypatch, handler):
@@ -153,3 +178,33 @@ def test_thumbnail_rate_limited(clean_env, monkeypatch):
     resp = client.get(THUMB_URL)
     assert resp.status_code == 429
     assert resp.json()["code"] == "RATE_LIMITED"
+
+
+def test_thumbnail_invalid_media_rejected(clean_env, monkeypatch):
+    # The upstream returns bytes with a 200, but ffprobe validation must
+    # refuse to serve anything that is not really an image — an HTML error
+    # page from upstream can never become a "successful" download.
+    use_transport(monkeypatch, jpeg_ok)
+    monkeypatch.setattr(media, "ffprobe_available", lambda: True)
+    client = TestClient(create_app())
+
+    # Case 1: ffprobe cannot parse the bytes at all.
+    monkeypatch.setattr(media, "probe_media", lambda data: None)
+    resp = client.get(THUMB_URL)
+    assert resp.status_code == 502
+    assert resp.json()["code"] == "PROVIDER_ERROR"
+
+    # Case 2: ffprobe parses the bytes, but they are not an image.
+    monkeypatch.setattr(
+        media,
+        "probe_media",
+        lambda data: {
+            "format": "mp3",
+            "video_codec": "mp3",
+            "width": None,
+            "height": None,
+        },
+    )
+    resp = client.get(THUMB_URL)
+    assert resp.status_code == 502
+    assert resp.json()["code"] == "PROVIDER_ERROR"

@@ -18,7 +18,17 @@ def test_health(client):
     resp = client.get("/api/v1/health")
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {"status": "ok", "service": "youtube-inspector", "version": "1.0.0"}
+    assert body["status"] == "ok"
+    assert body["service"] == "youtube-inspector"
+    assert body["version"] == "1.0.0"
+    # Media-tool versions are reported (validation depends on ffprobe).
+    # The exact key sets are asserted so that no environment variable,
+    # secret or other configuration can leak through this endpoint.
+    assert set(body) == {"status", "service", "version", "tools"}
+    assert set(body["tools"]) == {"ffmpeg", "ffprobe"}
+    for value in body["tools"].values():
+        assert value is None or isinstance(value, str)
+    assert "YOUTUBE_API_KEY" not in resp.text
 
 
 def test_frontend_served(client):

@@ -59,8 +59,18 @@ curl https://<your-service>/api/v1/health
 ```
 
 ```json
-{"status": "ok", "service": "youtube-inspector", "version": "1.0.0"}
+{
+  "status": "ok",
+  "service": "youtube-inspector",
+  "version": "1.0.0",
+  "tools": {"ffmpeg": "ffmpeg version …", "ffprobe": "ffprobe version …"}
+}
 ```
+
+`tools` reports the media-tool version lines (or `null` when a binary is
+absent) — nothing else about the environment is exposed. ffprobe presence
+matters: thumbnail output validation (below) is active exactly when
+ffprobe is available, and the deployed Docker image guarantees it.
 
 ### `POST /api/v1/youtube/inspect`
 
@@ -101,8 +111,9 @@ Validation errors (HTTP 400) and other failures use a consistent shape:
 ```
 
 Error codes: `MALFORMED_URL`, `INVALID_URL`, `UNSUPPORTED_HOST`,
-`INVALID_VIDEO_ID` (400), `THUMBNAIL_UNAVAILABLE` (404), `RATE_LIMITED`
-(429), `REQUEST_TOO_LARGE` (413), `PROVIDER_TIMEOUT` (502),
+`INVALID_VIDEO_ID` (400), `THUMBNAIL_UNAVAILABLE` (404),
+`DOWNLOAD_NOT_PERMITTED` (422), `RATE_LIMITED` (429),
+`REQUEST_TOO_LARGE` (413), `PROVIDER_TIMEOUT` (502),
 `PROVIDER_ERROR` (502). Upstream error bodies are never forwarded — they can
 contain sensitive details — and API keys never appear in responses or logs.
 
@@ -137,6 +148,40 @@ written to disk. There is no temp file to expire, clean up, or leak between
 users — the no-storage approach exceeds the usual short-lived-file
 requirement by never creating a file at all.
 
+**Output validation:** before the bytes are served, they are probed with
+ffprobe (when available — always, in the Docker image). If the probe fails
+or the bytes are not an image format, the request fails with 502
+`PROVIDER_ERROR` ("Upstream returned invalid media.") instead of delivering
+an HTML error page or other non-image content as a successful download.
+
+### `POST /api/v1/youtube/download`
+
+The video-download endpoint, backed by the download-engine registry
+described below.
+
+```bash
+curl -X POST https://<your-service>/api/v1/youtube/download \
+  -H 'Content-Type: application/json' \
+  -d '{"url": "https://www.youtube.com/watch?v=dQw4y9WgXcQ"}'
+```
+
+The URL is validated exactly like `/inspect` (400 codes for malformed
+URLs and unsupported hosts) and the endpoint is rate-limited like the
+others. Because no permitted download engine exists for arbitrary YouTube
+videos, every well-formed request is currently answered honestly:
+
+```json
+{
+  "code": "DOWNLOAD_NOT_PERMITTED",
+  "message": "No permitted download workflow exists for arbitrary YouTube videos. …",
+  "platform": "youtube"
+}
+```
+
+(HTTP 422.) If a permitted engine ever becomes available, it registers in
+`ENGINE_REGISTRY` (see below) and this endpoint begins serving real
+download jobs through it — with no frontend or API-shape change.
+
 ### Accepted URL formats
 
 `youtube.com` / `www.youtube.com` / `m.youtube.com` / `music.youtube.com` /
@@ -145,6 +190,63 @@ requirement by never creating a file at all.
 lookalike hosts, credential-embedded URLs and non-HTTP(S) schemes are
 rejected. The server only ever calls the two fixed official endpoints above
 with a validated video ID, which structurally prevents SSRF through this API.
+
+## Media tooling (FFmpeg)
+
+The Docker image installs **FFmpeg and ffprobe from the Debian package
+manager** (`apt-get install ffmpeg` on `python:3.12-slim`); the build runs
+`ffmpeg -version && ffprobe -version` and fails if either is missing, and
+`GET /api/v1/health` reports the installed version lines at runtime.
+
+- **What it is used for today:** output validation. Fetched thumbnail
+  bytes are probed with ffprobe before being served, so non-image bytes
+  from upstream are rejected with 502 instead of being delivered as a
+  successful download (see the thumbnail endpoint above). Probing runs on
+  a temp file inside a per-call temporary directory with a 10-second
+  timeout; the only path on the command line is one the service created,
+  and invocations are argument lists, never a shell.
+- **What it is for tomorrow:** media processing — verification of any
+  future download engine's output with ffprobe, and stream
+  merging/remuxing with ffmpeg — *only* for content obtained through a
+  permitted workflow (see the engine architecture below).
+- **What it is not:** an extractor. FFmpeg never fetches YouTube content
+  in this service and does not make downloading permitted.
+- **Licensing:** Debian's `ffmpeg` package is a GPL-enabled build. The
+  binary ships only inside this service's container image and is not
+  redistributed outside it; the corresponding source is available from
+  the Debian archive. FFmpeg source is not vendored into this repository.
+
+In a bare development environment without ffprobe, the service still runs:
+`/api/v1/health` reports `"ffprobe": null` and thumbnail validation is
+skipped (the bytes are served after the existing size/host checks). The
+deployed image always has ffprobe, so validation is always active in
+production.
+
+## Download engine architecture
+
+Downloads are designed behind an **engine registry** (`app/media.py`):
+
+- `DownloadEngine` is a small protocol: a `name`, a `supports(url_info)`
+  check, and a **required, non-empty `permitted_basis`** — a human-readable
+  statement of *why* the engine is permitted for the content it handles.
+  `select_engine()` never selects an engine that lacks a stated permitted
+  basis.
+- `POST /api/v1/youtube/download` validates the URL, consults
+  `select_engine()`, and serves the request through the selected engine.
+
+**Why the registry is empty:** an engine may only be registered when a
+permitted workflow exists, and none exists for arbitrary YouTube video
+downloads. YouTube's Terms and Developer Policies (§III.E.1) prohibit
+third-party services from downloading YouTube videos or making them
+available offline without prior written approval, and every known
+extractor (yt-dlp, Cobalt, and similar) works by accessing YouTube
+through channels YouTube does not grant — they are deliberately *not*
+integrated. Consequently the download endpoint currently returns 422
+`DOWNLOAD_NOT_PERMITTED` for every valid URL, and
+`capabilities.download` remains `false`. This is a policy boundary, not a
+missing feature: the moment a genuinely permitted mechanism exists, it can
+be registered in `ENGINE_REGISTRY` and the endpoint serves real jobs with
+no frontend or API change.
 
 ## Integrating from another website
 
@@ -166,7 +268,7 @@ with a validated video ID, which structurally prevents SSRF through this API.
 |------------------------|---------|-------------------------------------------------------------------------|
 | `YOUTUBE_API_KEY`      | unset   | Enables the Data API v3 metadata path. Unset → oEmbed fallback.        |
 | `ALLOWED_ORIGINS`      | unset   | Comma-separated CORS allow-list. Unset → same-origin only.              |
-| `RATE_LIMIT_PER_MINUTE`| `30`    | Per-IP token-bucket limit on the inspect and thumbnail endpoints.       |
+| `RATE_LIMIT_PER_MINUTE`| `30`    | Per-IP token-bucket limit on the inspect, thumbnail and download endpoints. |
 | `PORT`                 | `8000`  | Listen port (set automatically by Render).                              |
 
 Copy `.env.example` to `.env` for local configuration; never commit `.env`.
@@ -207,6 +309,9 @@ replaceable because all logic lives behind the API contract.
   `i.ytimg.com` for thumbnails, always with a validated ID.
 - 8 KB request-body cap, 8 s upstream timeouts, 2 MB thumbnail cap,
   per-IP rate limiting.
+- Fetched thumbnail bytes are ffprobe-validated as real images before
+  being served; media subprocesses use fixed argument vectors (never a
+  shell), per-call temp directories and bounded timeouts.
 - Security headers on every response (`nosniff`, `X-Frame-Options: DENY`,
   `Referrer-Policy`, and a CSP with `frame-src 'none'` that only allows
   `i.ytimg.com` images beyond the site's own assets).
@@ -223,10 +328,15 @@ The suite covers URL parsing (valid formats, lookalike hosts, schemes,
 credentials), the API contract with **mocked** upstream responses (success,
 unavailable, timeout, upstream error, rate limiting, API-key non-leakage),
 the thumbnail endpoint with a mocked image host (success, maxres→hq
-fallback, unavailable, invalid ID, timeout, oversized body, rate limiting),
-health, CORS and the frontend (including asserting there is no embedded
-player and no button offers a *video* download — the only download control
-is "Download thumbnail"). Unit tests make no live network calls.
+fallback, unavailable, invalid ID, timeout, oversized body, rate limiting,
+ffprobe output-validation rejection), the media module (tool versions,
+real-JPEG probing, garbage-input handling — ffprobe-dependent tests skip
+cleanly when ffprobe is absent), the engine registry (intentionally empty;
+selection honors the permitted-basis requirement) and the download
+endpoint's 422 contract, health, CORS and the frontend (including asserting
+there is no embedded player and no button offers a *video* download — the
+only download control is "Download thumbnail"). Unit tests make no live
+network calls.
 
 ## Maintenance
 
